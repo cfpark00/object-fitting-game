@@ -8,15 +8,20 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; height: 100vh; overflow: hidden; }
 
-#sidebar { width: 260px; background: #16213e; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; border-right: 2px solid #0f3460; }
+#sidebar { width: 340px; background: #16213e; padding: 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; border-right: 2px solid #0f3460; }
 #sidebar h2 { font-size: 14px; color: #8899aa; text-transform: uppercase; letter-spacing: 1px; }
-.shape-card { background: #1a1a2e; border: 2px solid #333; border-radius: 8px; padding: 10px; cursor: grab; transition: border-color 0.15s, transform 0.1s; }
-.shape-card:hover { border-color: #e94560; transform: scale(1.02); }
-.shape-card.placed { opacity: 0.3; cursor: default; pointer-events: none; }
-.shape-card canvas { display: block; margin: 0 auto 6px; }
-.shape-info { display: flex; justify-content: space-between; font-size: 12px; }
-.shape-score { color: #e94560; font-weight: bold; }
-.shape-area { color: #888; }
+#shape-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+#shape-table th { color: #8899aa; text-align: left; padding: 4px 6px; cursor: pointer; user-select: none; border-bottom: 1px solid #333; white-space: nowrap; }
+#shape-table th:hover { color: #e94560; }
+#shape-table th.sorted { color: #e94560; }
+#shape-table td { padding: 4px 6px; vertical-align: middle; }
+#shape-table tr.shape-row { cursor: pointer; transition: background 0.1s; }
+#shape-table tr.shape-row:hover { background: #1a1a2e; }
+#shape-table tr.shape-row.selected { background: #0f3460; }
+#shape-table tr.shape-row.placed { opacity: 0.3; pointer-events: none; }
+.col-pts { color: #e94560; font-weight: bold; text-align: right; }
+.col-area { color: #aaa; text-align: right; }
+.col-ratio { color: #4cc9f0; text-align: right; }
 
 #main { flex: 1; display: flex; flex-direction: column; }
 #topbar { padding: 12px 20px; display: flex; align-items: center; gap: 20px; background: #16213e; border-bottom: 2px solid #0f3460; }
@@ -40,7 +45,15 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; colo
 
 <div id="sidebar">
   <h2>Shapes</h2>
-  <div id="shape-tray"></div>
+  <table id="shape-table">
+    <thead><tr>
+      <th data-sort="name">Shape</th>
+      <th data-sort="score">Pts</th>
+      <th data-sort="area">Area</th>
+      <th data-sort="ratio">Pts/A</th>
+    </tr></thead>
+    <tbody id="shape-tbody"></tbody>
+  </table>
 </div>
 
 <div id="main">
@@ -277,34 +290,52 @@ function removeLast() {
   if (placed.length > 0) { placed.pop(); buildShapeTray(); draw(); updateScore(); }
 }
 
-// ===== Shape tray =====
+// ===== Shape table =====
+let sortKey = 'ratio';
+let sortDir = -1; // -1 = descending
+
 function buildShapeTray() {
-  const tray = document.getElementById('shape-tray');
-  tray.innerHTML = '';
+  const tbody = document.getElementById('shape-tbody');
+  tbody.innerHTML = '';
   const p = problems[currentProblemIdx];
   const placedIds = new Set(placed.map(p => p.shapeId));
 
-  for (const shape of p.shapes) {
-    const card = document.createElement('div');
-    card.className = 'shape-card' + (placedIds.has(shape.id) ? ' placed' : '');
-    card.dataset.id = shape.id;
+  // Sort shapes
+  const sorted = [...p.shapes].sort((a, b) => {
+    let va, vb;
+    if (sortKey === 'name') { va = a.name; vb = b.name; return sortDir * va.localeCompare(vb); }
+    if (sortKey === 'score') { va = a.score; vb = b.score; }
+    else if (sortKey === 'area') { va = a.area; vb = b.area; }
+    else { va = a.score / a.area; vb = b.score / b.area; }
+    return sortDir * (va - vb);
+  });
 
-    // Mini canvas preview
+  // Update header styling
+  document.querySelectorAll('#shape-table th').forEach(th => {
+    th.classList.toggle('sorted', th.dataset.sort === sortKey);
+    const arrow = sortDir > 0 ? ' \u25B2' : ' \u25BC';
+    const base = th.dataset.sort === 'name' ? 'Shape' : th.dataset.sort === 'score' ? 'Pts' : th.dataset.sort === 'area' ? 'Area' : 'Pts/A';
+    th.textContent = th.dataset.sort === sortKey ? base + arrow : base;
+  });
+
+  for (const shape of sorted) {
+    const tr = document.createElement('tr');
+    tr.className = 'shape-row' + (placedIds.has(shape.id) ? ' placed' : '') + (selectedShapeId === shape.id ? ' selected' : '');
+
+    // Mini canvas
+    const tdShape = document.createElement('td');
     const mini = document.createElement('canvas');
-    const mw = 80, mh = 60;
+    const mw = 40, mh = 30;
     mini.width = mw; mini.height = mh;
     const mctx = mini.getContext('2d');
-
-    // Fit shape into mini canvas
     const vs = shape.baseVerts;
     const maxX = Math.max(...vs.map(v => v[0]));
     const maxY = Math.max(...vs.map(v => v[1]));
-    const sc = Math.min((mw - 8) / maxX, (mh - 8) / maxY);
+    const sc = Math.min((mw - 4) / maxX, (mh - 4) / maxY);
     const ox = (mw - maxX * sc) / 2, oy = (mh - maxY * sc) / 2;
-
     mctx.fillStyle = shape.color + '44';
     mctx.strokeStyle = shape.color;
-    mctx.lineWidth = 1.5;
+    mctx.lineWidth = 1;
     mctx.beginPath();
     vs.forEach(([x, y], i) => {
       if (i === 0) mctx.moveTo(ox + x * sc, oy + y * sc);
@@ -313,30 +344,44 @@ function buildShapeTray() {
     mctx.closePath();
     mctx.fill();
     mctx.stroke();
+    tdShape.appendChild(mini);
+    tr.appendChild(tdShape);
 
-    card.appendChild(mini);
+    const tdPts = document.createElement('td');
+    tdPts.className = 'col-pts';
+    tdPts.textContent = shape.score;
+    tr.appendChild(tdPts);
 
-    const info = document.createElement('div');
-    info.className = 'shape-info';
-    info.innerHTML = `<span>${shape.name}</span><span class="shape-score">${shape.score} pts</span>`;
-    card.appendChild(info);
+    const tdArea = document.createElement('td');
+    tdArea.className = 'col-area';
+    tdArea.textContent = shape.area;
+    tr.appendChild(tdArea);
 
-    const area = document.createElement('div');
-    area.className = 'shape-info';
-    area.innerHTML = `<span class="shape-area">area: ${shape.area}</span>`;
-    card.appendChild(area);
+    const tdRatio = document.createElement('td');
+    tdRatio.className = 'col-ratio';
+    tdRatio.textContent = (shape.score / shape.area).toFixed(2);
+    tr.appendChild(tdRatio);
 
-    card.addEventListener('click', () => {
+    tr.addEventListener('click', () => {
       if (placedIds.has(shape.id)) return;
       selectedShapeId = shape.id;
-      document.querySelectorAll('.shape-card').forEach(c => c.style.borderColor = '');
-      card.style.borderColor = '#e94560';
+      buildShapeTray();
       draw();
     });
 
-    tray.appendChild(card);
+    tbody.appendChild(tr);
   }
 }
+
+// Sort header clicks
+document.querySelectorAll('#shape-table th').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.sort;
+    if (sortKey === key) { sortDir *= -1; }
+    else { sortKey = key; sortDir = key === 'name' ? 1 : -1; }
+    buildShapeTray();
+  });
+});
 
 // ===== Canvas =====
 function resizeCanvas() {
