@@ -51,7 +51,7 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; colo
     <button onclick="resetProblem()">Reset</button>
     <button onclick="removeLast()">Undo</button>
     <div id="score-display">Score: <span id="score-val">0</span></div>
-    <div id="controls-help">Click shape &rarr; click to place | R/scroll = rotate | Backspace = remove</div>
+    <div id="controls-help">Click shape &rarr; click to place | Drag to move | Right-click = remove</div>
   </div>
   <div id="canvas-wrap">
     <canvas id="gameCanvas"></canvas>
@@ -233,11 +233,12 @@ function generateProblem(seed, nShapes, boxW, boxH) {
 // ===== Game state =====
 let currentProblemIdx = 0;
 let problems = [];
-let placed = [];       // { shapeId, verts, x, y, rotation, worldVerts }
+let placed = [];       // { shapeId, x, y, worldVerts }
 let selectedShapeId = null;
-let ghostRotation = 0;
 let ghostPos = null;
 let hoveredPlaced = -1;
+let dragging = null;   // { placedIdx, offsetX, offsetY }
+
 
 const NUM_PROBLEMS = 20;
 const N_SHAPES = 12;
@@ -260,8 +261,8 @@ function loadProblem() {
   const p = problems[currentProblemIdx];
   placed = [];
   selectedShapeId = null;
-  ghostRotation = 0;
   ghostPos = null;
+  dragging = null;
   document.getElementById('problem-info').textContent = `Problem ${currentProblemIdx + 1} / ${NUM_PROBLEMS} (seed=${p.seed})`;
   buildShapeTray();
   resizeCanvas();
@@ -328,7 +329,6 @@ function buildShapeTray() {
     card.addEventListener('click', () => {
       if (placedIds.has(shape.id)) return;
       selectedShapeId = shape.id;
-      ghostRotation = 0;
       document.querySelectorAll('.shape-card').forEach(c => c.style.borderColor = '');
       card.style.borderColor = '#e94560';
       draw();
@@ -402,12 +402,10 @@ function draw() {
   // Draw placed shapes
   placed.forEach((pl, idx) => {
     const shape = p.shapes[pl.shapeId];
-    const overlap = checkOverlap(idx);
-    const inBox = polyInBox(pl.worldVerts, BOX_W, BOX_H);
-    const invalid = overlap || !inBox;
-    const fill = invalid ? shape.color + '33' : shape.color + '66';
-    const stroke = invalid ? '#ff0000' : shape.color;
-    drawPoly(pl.worldVerts, fill, stroke, invalid ? 3 : 2);
+    const isDragging = dragging !== null && dragging.placedIdx === idx;
+    const fill = shape.color + (isDragging ? '88' : '66');
+    const stroke = shape.color;
+    drawPoly(pl.worldVerts, fill, stroke, isDragging ? 3 : 2);
 
     // Label
     const [cx, cy] = polygonCentroid(pl.worldVerts);
@@ -422,8 +420,11 @@ function draw() {
   // Draw ghost
   if (selectedShapeId !== null && ghostPos) {
     const shape = p.shapes[selectedShapeId];
-    const verts = getTransformedVerts(shape.baseVerts, ghostPos[0], ghostPos[1], ghostRotation);
-    drawPoly(verts, shape.color + '22', shape.color + '88', 1);
+    const verts = getTransformedVerts(shape.baseVerts, ghostPos[0], ghostPos[1]);
+    const valid = isPlacementValid(verts, -1);
+    const ghostFill = valid ? shape.color + '33' : '#ff000022';
+    const ghostStroke = valid ? shape.color + '88' : '#ff000088';
+    drawPoly(verts, ghostFill, ghostStroke, 1);
   }
 
   // Box label
@@ -434,11 +435,9 @@ function draw() {
   ctx.fillText(`${BOX_W} x ${BOX_H}`, lx, ly);
 }
 
-function getTransformedVerts(baseVerts, px, py, rotation) {
+function getTransformedVerts(baseVerts, px, py) {
   const [cx, cy] = polygonCentroid(baseVerts);
-  let verts = rotateVerts(baseVerts, rotation, cx, cy);
-  const [ncx, ncy] = polygonCentroid(verts);
-  return translateVerts(verts, px - ncx, py - ncy);
+  return translateVerts(baseVerts, px - cx, py - cy);
 }
 
 function checkOverlap(placedIdx) {
@@ -450,13 +449,21 @@ function checkOverlap(placedIdx) {
   return false;
 }
 
+// Check if verts can be placed without collision. skipIdx = index to ignore (for dragging).
+function isPlacementValid(verts, skipIdx) {
+  if (!polyInBox(verts, BOX_W, BOX_H)) return false;
+  for (let i = 0; i < placed.length; i++) {
+    if (i === skipIdx) continue;
+    if (polygonsOverlap(verts, placed[i].worldVerts)) return false;
+  }
+  return true;
+}
+
 function updateScore() {
   let total = 0;
   const p = problems[currentProblemIdx];
-  placed.forEach((pl, idx) => {
-    const inBox = polyInBox(pl.worldVerts, BOX_W, BOX_H);
-    const overlap = checkOverlap(idx);
-    if (inBox && !overlap) total += p.shapes[pl.shapeId].score;
+  placed.forEach((pl) => {
+    total += p.shapes[pl.shapeId].score;
   });
   document.getElementById('score-val').textContent = total;
 }
@@ -467,72 +474,104 @@ canvas.addEventListener('mousemove', (e) => {
   const [x, y] = fromCanvas(e.clientX - rect.left, e.clientY - rect.top);
   ghostPos = [x, y];
 
+  if (dragging !== null) {
+    // Move dragged shape
+    const p = problems[currentProblemIdx];
+    const pl = placed[dragging.placedIdx];
+    const shape = p.shapes[pl.shapeId];
+    const nx = x - dragging.offsetX;
+    const ny = y - dragging.offsetY;
+    const newVerts = getTransformedVerts(shape.baseVerts, nx, ny);
+    if (isPlacementValid(newVerts, dragging.placedIdx)) {
+      pl.x = nx;
+      pl.y = ny;
+      pl.worldVerts = newVerts;
+    }
+    draw();
+    updateScore();
+    return;
+  }
+
   // Check if hovering a placed shape
   hoveredPlaced = -1;
   for (let i = placed.length - 1; i >= 0; i--) {
     if (pointInPolygon(x, y, placed[i].worldVerts)) { hoveredPlaced = i; break; }
   }
 
+  canvas.style.cursor = selectedShapeId !== null ? 'crosshair' : (hoveredPlaced >= 0 ? 'grab' : 'default');
   draw();
 });
 
-canvas.addEventListener('click', (e) => {
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return; // left click only
   const rect = canvas.getBoundingClientRect();
   const [x, y] = fromCanvas(e.clientX - rect.left, e.clientY - rect.top);
   const p = problems[currentProblemIdx];
 
   if (selectedShapeId !== null) {
-    // Place shape
+    // Place new shape
     const shape = p.shapes[selectedShapeId];
-    const worldVerts = getTransformedVerts(shape.baseVerts, x, y, ghostRotation);
-    placed.push({ shapeId: selectedShapeId, x, y, rotation: ghostRotation, worldVerts });
-    selectedShapeId = null;
-    ghostRotation = 0;
-    buildShapeTray();
-    draw();
-    updateScore();
-  }
-});
-
-canvas.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  // Right click: remove shape under cursor
-  if (hoveredPlaced >= 0) {
-    placed.splice(hoveredPlaced, 1);
-    hoveredPlaced = -1;
-    buildShapeTray();
-    draw();
-    updateScore();
-  }
-});
-
-canvas.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  if (selectedShapeId !== null) {
-    ghostRotation += (e.deltaY > 0 ? 1 : -1) * Math.PI / 12;  // 15 degree increments
-    draw();
-  }
-});
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'r' || e.key === 'R') {
-    if (selectedShapeId !== null) {
-      ghostRotation += Math.PI / 12;
-      draw();
-    }
-  }
-  if (e.key === 'Escape') {
-    selectedShapeId = null;
-    draw();
-  }
-  if (e.key === 'Backspace' || e.key === 'Delete') {
-    if (hoveredPlaced >= 0) {
-      placed.splice(hoveredPlaced, 1);
-      hoveredPlaced = -1;
+    const worldVerts = getTransformedVerts(shape.baseVerts, x, y);
+    if (isPlacementValid(worldVerts, -1)) {
+      placed.push({ shapeId: selectedShapeId, x, y, worldVerts });
+      selectedShapeId = null;
       buildShapeTray();
       draw();
       updateScore();
     }
+    return;
+  }
+
+  // Start dragging a placed shape
+  if (hoveredPlaced >= 0) {
+    const pl = placed[hoveredPlaced];
+    const [cx, cy] = polygonCentroid(pl.worldVerts);
+    dragging = { placedIdx: hoveredPlaced, offsetX: x - pl.x, offsetY: y - pl.y };
+    canvas.style.cursor = 'grabbing';
+  }
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  if (dragging !== null) {
+    dragging = null;
+    canvas.style.cursor = hoveredPlaced >= 0 ? 'grab' : 'default';
+    draw();
+    updateScore();
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (dragging !== null) {
+    dragging = null;
+    draw();
+    updateScore();
+  }
+  ghostPos = null;
+  draw();
+});
+
+canvas.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const [x, y] = fromCanvas(e.clientX - rect.left, e.clientY - rect.top);
+  // Right click: remove shape under cursor
+  for (let i = placed.length - 1; i >= 0; i--) {
+    if (pointInPolygon(x, y, placed[i].worldVerts)) {
+      placed.splice(i, 1);
+      hoveredPlaced = -1;
+      dragging = null;
+      buildShapeTray();
+      draw();
+      updateScore();
+      return;
+    }
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    selectedShapeId = null;
+    draw();
   }
 });
 
